@@ -532,6 +532,46 @@ def test_over_ewm_mean(
     assert_equal_data(result, expected)
 
 
+def test_over_partition_by_order_by(constructor: Constructor) -> None:
+    # https://github.com/narwhals-dev/narwhals/issues/4180
+    data = {"g": ["x", "y", "x", "z", "y", "x"], "i": [3, 5, 1, -7, 0, 3]}
+    df = nw.from_native(constructor(data))
+    result = (
+        df.with_columns(
+            first=nw.col("i").first().over("g", order_by="i"),
+            last=nw.col("i").last().over("g", order_by="i"),
+        )
+        .select("i", "first", "last")
+        .sort("i")
+    )
+    expected = {
+        "i": [-7, 0, 1, 3, 3, 5],
+        "first": [-7, 0, 1, 1, 1, 0],
+        "last": [-7, 5, 3, 3, 3, 5],
+    }
+    assert_equal_data(result, expected)
+
+
+def test_over_partition_by_order_by_with_nulls(constructor: Constructor) -> None:
+    # https://github.com/narwhals-dev/narwhals/issues/4180
+    data = {"g": ["x", None, "x", "y", None], "i": [3, 5, 1, -7, 0]}
+    df = nw.from_native(constructor(data))
+    result = (
+        df.with_columns(
+            first=nw.col("i").first().over("g", order_by="i"),
+            last=nw.col("i").last().over("g", order_by="i"),
+        )
+        .select("i", "first", "last")
+        .sort("i")
+    )
+    expected = {
+        "i": [-7, 0, 1, 3, 5],
+        "first": [-7, 0, 1, 1, 0],
+        "last": [-7, 5, 3, 3, 5],
+    }
+    assert_equal_data(result, expected)
+
+
 @pytest.mark.parametrize(
     ("partition", "expected_min", "expected_max"),
     [

@@ -129,7 +129,9 @@ class ArrowExpr(EagerExpr["ArrowDataFrame", ArrowSeries]):
             version=self._version,
         )
 
-    def over(self, partition_by: Sequence[str], order_by: Sequence[str]) -> Self:
+    def over(  # noqa: C901
+        self, partition_by: Sequence[str], order_by: Sequence[str]
+    ) -> Self:
         if not partition_by:
             assert order_by  # noqa: S101
             return self._over_without_partition_by(order_by)
@@ -166,8 +168,14 @@ class ArrowExpr(EagerExpr["ArrowDataFrame", ArrowSeries]):
             else:
                 _, aliases = evaluate_output_names_and_aliases(self, df, [])
                 leaf_ce = self
+            token: str | None = None
             if order_by:
-                df = df.sort(*order_by, descending=False, nulls_last=False)
+                # The join below returns rows in sorted order, so keep the
+                # original positions around to restore them afterwards.
+                token = generate_temporary_column_name(8, df.columns)
+                df = df.with_row_index(token, order_by=None).sort(
+                    *order_by, descending=False, nulls_last=False
+                )
 
             if overlap := set(aliases).intersection(partition_by):
                 # E.g. `df.select(nw.all().sum().over('a'))`. This is well-defined,
@@ -177,6 +185,14 @@ class ArrowExpr(EagerExpr["ArrowDataFrame", ArrowSeries]):
                     "This is not yet supported."
                 )
                 raise NotImplementedError(msg)
+
+            def _restore_order(series: Sequence[ArrowSeries]) -> Sequence[ArrowSeries]:
+                # The joins below return rows in sorted order; put them back
+                # in the order the rows were in before sorting.
+                if token is None:
+                    return series
+                sorting_indices = pc.sort_indices(df.get_column(token).native)
+                return [s._with_native(s.native.take(sorting_indices)) for s in series]
 
             partition_tbl = df.simple_select(*partition_by)
             has_nulls = [ca.null_count > 0 for ca in partition_tbl.native.columns]
@@ -189,7 +205,7 @@ class ArrowExpr(EagerExpr["ArrowDataFrame", ArrowSeries]):
                     right_on=partition_by,
                     suffix="_right",
                 )
-                return [tmp.get_column(alias) for alias in aliases]
+                return _restore_order([tmp.get_column(alias) for alias in aliases])
 
             tbl_native, current_cols = df.native, df.columns
             plx = self.__narwhals_namespace__()
@@ -227,7 +243,7 @@ class ArrowExpr(EagerExpr["ArrowDataFrame", ArrowSeries]):
                 how="inner",
                 suffix="_right",
             )
-            return [ret.get_column(alias) for alias in aliases]
+            return _restore_order([ret.get_column(alias) for alias in aliases])
 
         return self.__class__(
             func,
